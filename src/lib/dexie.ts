@@ -48,7 +48,7 @@ class ChatDB extends Dexie {
       updated_at: new Date(),
     });
 
-    return id
+    return id;
   }
 
   async getAllThreads() {
@@ -70,10 +70,9 @@ class ChatDB extends Dexie {
       await this.threads.update(message.threadId, {
         updated_at: new Date(),
       });
+    });
 
-    })
-
-    return messageId
+    return messageId;
   }
 
   async getMessagesForThread(threadId: string) {
@@ -81,6 +80,13 @@ class ChatDB extends Dexie {
       .where("threadId")
       .equals(threadId)
       .sortBy("created_at");
+  }
+
+  async deleteThread(threadId: string) {
+    await this.transaction("rw", [this.messages, this.threads], async () => {
+      await this.messages.where("threadId").equals(threadId).delete();
+      await this.threads.delete(threadId);
+    });
   }
 }
 

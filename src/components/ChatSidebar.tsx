@@ -1,5 +1,5 @@
-import { Moon, Plus, Sun } from "lucide-react";
-import {  useLayoutEffect, useState } from "react";
+import { Moon, Plus, Sun, Trash } from "lucide-react";
+import { useLayoutEffect, useState } from "react";
 import { Button } from "~/components/ui/button";
 import {
   SidebarContent,
@@ -39,25 +39,27 @@ export const ChatSidebar = () => {
   const threads = useLiveQuery(() => db.getAllThreads(), []);
 
   const handleToggleTheme = () => {
-    if (theme === "dark") {
-      setTheme("light");
-    } else {
-      setTheme("dark");
-    }
+    setTheme(theme === "dark" ? "light" : "dark");
   };
 
   const handleCreateThread = async () => {
     const threadId = await db.createThread(textInput);
-
     setDialogIsOpen(false);
     setTextInput("");
-
     navigate(`/thread/${threadId}`);
   };
-  
+
+  const handleDeleteThread = async (threadId: string) => {
+    await db.deleteThread(threadId);
+    if (activeChat === threadId) {
+      setActiveChat(null);
+      navigate("/");
+    }
+  };
+
   useLayoutEffect(() => {
     setActiveChat(location.pathname.split("/")[2]);
-  }, [])
+  }, [location.pathname]);
 
   return (
     <>
@@ -102,8 +104,8 @@ export const ChatSidebar = () => {
               <SidebarGroupLabel>Recent Chats</SidebarGroupLabel>
               <SidebarMenu>
                 {threads?.map((thread) => (
-                  <SidebarMenuItem key={thread.id}>
-                    <Link to={`/thread/${thread.id}`}>
+                  <SidebarMenuItem key={thread.id} className="flex justify-between items-center">
+                    <Link to={`/thread/${thread.id}`} className="flex-1">
                       <SidebarMenuButton
                         onClick={() => setActiveChat(thread.id)}
                         isActive={activeChat === thread.id}
@@ -111,6 +113,9 @@ export const ChatSidebar = () => {
                         {thread.title}
                       </SidebarMenuButton>
                     </Link>
+                    <Button variant="ghost" size="icon" onClick={() => handleDeleteThread(thread.id)}>
+                      <Trash className="h-4 w-4 text-red-500" />
+                    </Button>
                   </SidebarMenuItem>
                 ))}
               </SidebarMenu>
@@ -124,7 +129,7 @@ export const ChatSidebar = () => {
             className="w-full justify-start"
           >
             <Sun className="h-[1.2rem] w-[1.2rem] rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
-            <Moon className="absolute h-[1.2rem] w-[1.2rem] rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />{" "}
+            <Moon className="absolute h-[1.2rem] w-[1.2rem] rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
             Toggle Theme
           </Button>
         </SidebarFooter>
