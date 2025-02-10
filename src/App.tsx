@@ -11,7 +11,7 @@ export default function App() {
     <SidebarProvider open={sidebarOpen} onOpenChange={setSidebarOpen}>
       <div className="flex h-screen bg-background w-full">
         <ChatSidebar />
-        <Routes>
+        <Routes>  
           <Route path="/thread/:threadId" element={<ChatPage />} />
         </Routes>
       </div>
