@@ -102,7 +102,7 @@ const ChatPage = () => {
     <div className="flex flex-col flex-1">
 
       <header className="flex items-center px-4 h-16 border-b">
-        <h1 className="text-xl font-semibold ml-4 text-3xl tracking-widest">OktaAI DashBoard Chat</h1>
+        <h1 className="text-xl font-semibold ml-4 text-3xl tracking-widest">Dashboard</h1>
       </header>
       <main className="flex-1 overflow-auto p-4 w-full relative">
         <div className="mx-auto space-y-4 pb-20 max-w-screen-md">
