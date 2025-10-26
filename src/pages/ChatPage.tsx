@@ -1,19 +1,32 @@
 import { useLiveQuery } from "dexie-react-hooks";
 import ollama from "ollama";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { ChatMessage } from "~/components/ChatMessage";
 import { ThoughtMessage } from "~/components/ThoughtMessage";
 import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
 import { db } from "~/lib/dexie";
+import { ArrowDown, Brain, Send, StopCircle, Sparkles } from "lucide-react";
+
+/**
+ * Modern, interactive ChatPage
+ */
 
 const ChatPage = () => {
   const [textInput, setTextInput] = useState("");
   const [streamedThought, setStreamedThought] = useState("");
   const [streamedMessage, setStreamedMessage] = useState("");
+  const [isComposing, setIsComposing] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [showThoughts, setShowThoughts] = useState(true);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
+  const cancelRef = useRef({ cancel: false });
+  const textRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollToBottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLElement | null>(null);
 
   const params = useParams();
 
@@ -22,120 +35,249 @@ const ChatPage = () => {
     [params.threadId]
   );
 
+  // ---- utils: scroll ----
+  const scrollToBottom = (smooth = true) => {
+    if (scrollToBottomRef.current) {
+      scrollToBottomRef.current.scrollIntoView({ behavior: smooth ? "smooth" : "auto" });
+    }
+  };
+
+  const updateIsAtBottom = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const threshold = 64; // px tolerance
+    setIsAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < threshold);
+  };
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const onScroll = () => updateIsAtBottom();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    updateIsAtBottom();
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (isAtBottom) scrollToBottom(false);
+  }, [messages, streamedMessage, streamedThought]);
+
+  // ---- textarea autosize ----
+  useEffect(() => {
+    if (!textRef.current) return;
+    textRef.current.style.height = "auto";
+    const h = Math.min(textRef.current.scrollHeight, 200);
+    textRef.current.style.height = h + "px";
+  }, [textInput]);
+
+  const handleTextareaKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (isComposing) return;
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (!textInput.trim() || isStreaming) return;
+      handleSubmit();
+    }
+  };
+
   const handleSubmit = async () => {
+    const prompt = textInput.trim();
+    if (!prompt) return;
+
+    setError(null);
+    setIsStreaming(true);
+    cancelRef.current.cancel = false;
+
     await db.createMessage({
-      content: textInput,
+      content: prompt,
       role: "user",
       threadId: params.threadId as string,
       thought: "",
     });
 
     setTextInput("");
-
-    const stream = await ollama.chat({
-      model: "deepseek-r1:8b",
-      messages: [
-        {
-          role: "user",
-          content: textInput.trim(),
-        },
-      ],
-      stream: true,
-    });
-
-    let fullThought = "";
-    let fullContent = "";
-
-    let outputMode: "think" | "response" = "think";
-
-    for await (const part of stream) {
-      if (outputMode === "think") {
-        if (
-          !(
-            part.message.content.includes("<think>") ||
-            part.message.content.includes("</think>")
-          )
-        ) {
-          fullThought += part.message.content;
-        }
-
-        setStreamedThought(fullThought);
-
-        if (part.message.content.includes("</think>")) {
-          outputMode = "response";
-        }
-      } else {
-        fullContent += part.message.content;
-        setStreamedMessage((prevMessage) => prevMessage + part.message.content);
-      }
-    }
-
-    const cleanThought = fullThought.replace(/<\/?think>/g, "");
-    setStreamedThought(cleanThought);
-
-    await db.createMessage({
-      content: fullContent.trim(),
-      role: "assistant",
-      threadId: params.threadId as string,
-      thought: cleanThought,
-    });
-
-    setStreamedThought("");
     setStreamedMessage("");
+    setStreamedThought("");
+
+    try {
+      const stream = await ollama.chat({
+        model: "deepseek-r1",
+        messages: [
+          {
+            role: "user",
+            content: prompt,
+          },
+        ],
+        stream: true,
+      });
+
+      type OllamaStreamPart = { message?: { content?: string } };
+
+      let fullThought = "";
+      let fullContent = "";
+      let outputMode: "think" | "response" = "think";
+
+      const asyncStream = stream as AsyncIterable<OllamaStreamPart>;
+
+      for await (const part of asyncStream) {
+        if (cancelRef.current.cancel) break;
+        const chunk: string = part?.message?.content ?? "";
+        if (!chunk) continue;
+
+        if (outputMode === "think") {
+          if (!(chunk.includes("<think>") || chunk.includes("</think>"))) {
+            fullThought += chunk;
+          }
+          if (showThoughts) setStreamedThought(fullThought);
+          if (chunk.includes("</think>")) {
+            outputMode = "response";
+          }
+        } else {
+          fullContent += chunk;
+          setStreamedMessage((prev) => prev + chunk);
+        }
+      }
+
+      const cleanThought = fullThought.replace(/<\/?think>/g, "");
+      setStreamedThought(showThoughts ? cleanThought : "");
+
+      if (fullContent.trim()) {
+        await db.createMessage({
+          content: fullContent.trim(),
+          role: "assistant",
+          threadId: params.threadId as string,
+          thought: cleanThought,
+        });
+      }
+    } catch (err: unknown) {
+      console.error(err);
+      const message = err instanceof Error ? err.message : String(err);
+      setError(message || "Something went wrong while generating the response.");
+    } finally {
+      setIsStreaming(false);
+      cancelRef.current.cancel = false;
+      setStreamedThought("");
+      setStreamedMessage("");
+      setTimeout(() => scrollToBottom(), 0);
+    }
   };
 
-  const handleTextareaChange = (
-    event: React.ChangeEvent<HTMLTextAreaElement>
-  ) => {
-    setTextInput(event.target.value);
+  const stopGeneration = () => {
+    if (!isStreaming) return;
+    cancelRef.current.cancel = true;
+    setIsStreaming(false);
   };
 
-  const handleScrollToBottom = () => {
-    scrollToBottomRef.current?.scrollIntoView();
+  const beautifyPrompt = () => {
+    const s = textInput.replace(/\s+/g, " ").trim();
+    const punct = /[.!?]$/;
+    setTextInput(punct.test(s) ? s : s + ".");
   };
-
-  useLayoutEffect(() => {
-    handleScrollToBottom();
-  }, [messages, streamedMessage, streamedThought]);
 
   return (
-    <div className="flex flex-col flex-1">
+    <div className="flex flex-col flex-1 relative">
+      {/* animated gradient background */}
+      <div className="pointer-events-none absolute inset-0 -z-10">
+        <div className="absolute inset-0 bg-[radial-gradient(60%_50%_at_50%_0%,rgba(19,234,253,0.12),transparent_60%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(40%_40%_at_80%_20%,rgba(161,68,255,0.10),transparent_60%)]" />
+      </div>
 
-      <header className="flex items-center px-4 h-16 border-b">
-        <h1 className="text-xl font-semibold ml-4 text-3xl tracking-widest">Dashboard</h1>
-      </header>
-      <main className="flex-1 overflow-auto p-4 w-full relative">
-        <div className="mx-auto space-y-4 pb-20 max-w-screen-md">
-          {messages?.map((message, index) => (
-            <ChatMessage
-              key={index}
-              role={message.role}
-              content={message.content}
-              thought={message.thought}
-            />
-          ))}
-
-          {streamedThought && <ThoughtMessage thought={streamedThought} />}
-
-          {streamedMessage && (
-            <ChatMessage role="assistant" content={streamedMessage} />
-          )}
-
-          <div ref={scrollToBottomRef}></div>
+      {/* header */}
+      <header className="sticky top-0 z-20 flex items-center justify-between h-16 border-b px-4 backdrop-blur supports-[backdrop-filter]:bg-background/70">
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-2xl md:text-3xl font-semibold tracking-widest">Dashboard</h1>
+          <span className="text-xs md:text-sm text-muted-foreground">Thread: {params.threadId}</span>
         </div>
-      </main>
-      <footer className="border-t p-4">
-        <div className="max-w-3xl mx-auto flex gap-2">
-          <Textarea
-            className="flex-1 text-3xl font-medium"
-            placeholder="Type your message here..."
-            rows={5}
-            onChange={handleTextareaChange}
-            value={textInput}
-          />
-          <Button onClick={handleSubmit} type="button">
-            Send
+        <div className="flex items-center gap-2">
+          <Button variant={showThoughts ? "default" : "outline"} size="sm" onClick={() => setShowThoughts((s) => !s)} title={showThoughts ? "Hide thinking" : "Show thinking"}>
+            <Brain className="h-4 w-4 mr-2" />
+            {showThoughts ? "Thoughts On" : "Thoughts Off"}
           </Button>
+          <Button variant="outline" size="sm" onClick={() => scrollToBottom()} title="Scroll to latest">
+            <ArrowDown className="h-4 w-4" />
+          </Button>
+        </div>
+      </header>
+
+      {/* main chat area */}
+      <main ref={scrollContainerRef as React.RefObject<HTMLElement>} className="flex-1 overflow-auto p-4 w-full relative">
+        <div className="mx-auto pb-32 max-w-screen-xl w-full">
+          {/* glass panel */}
+          <div className="rounded-2xl border bg-background/60 backdrop-blur p-4 md:p-6 shadow-sm">
+            <div className="space-y-4">
+              {messages?.map((message, index) => (
+                <ChatMessage key={index} role={message.role} content={message.content} thought={showThoughts ? message.thought : ""} />
+              ))}
+
+              {/* streaming thinking bubble */}
+              {showThoughts && streamedThought && (
+                <ThoughtMessage thought={streamedThought} />
+              )}
+
+              {/* streaming assistant bubble */}
+              {streamedMessage && (
+                <ChatMessage role="assistant" content={streamedMessage} />
+              )}
+
+              {/* error banner */}
+              {error && (
+                <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                  {error}
+                </div>
+              )}
+
+              <div ref={scrollToBottomRef} />
+            </div>
+          </div>
+        </div>
+
+        {/* scroll-to-bottom floating button */}
+        {!isAtBottom && (
+          <div className="sticky bottom-28 flex justify-center">
+            <Button onClick={() => scrollToBottom()} variant="secondary" className="shadow-md">
+              <ArrowDown className="mr-2 h-4 w-4" /> New messages
+            </Button>
+          </div>
+        )}
+      </main>
+
+      {/* composer */}
+      <footer className="sticky bottom-0 z-10 border-t backdrop-blur supports-[backdrop-filter]:bg-background/70">
+        <div className="max-w-screen-xl mx-auto px-4 py-3">
+          <div className="rounded-2xl border bg-background/70 backdrop-blur p-3 shadow-sm">
+            <div className="flex items-start gap-3">
+              <Button type="button" variant="outline" size="icon" className="shrink-0" onClick={beautifyPrompt} title="Tidy up your prompt">
+                <Sparkles className="h-4 w-4" />
+              </Button>
+
+              <Textarea
+                ref={textRef}
+                className="flex-1 resize-none text-sm md:text-base border-0 shadow-none focus-visible:ring-0 bg-transparent"
+                placeholder="Ask anything… (Enter to send, Shift+Enter for new line)"
+                rows={1}
+                onChange={(e) => setTextInput(e.target.value)}
+                value={textInput}
+                onKeyDown={handleTextareaKeyDown}
+                onCompositionStart={() => setIsComposing(true)}
+                onCompositionEnd={() => setIsComposing(false)}
+                disabled={isStreaming}
+              />
+
+              {!isStreaming ? (
+                <Button onClick={handleSubmit} type="button" disabled={!textInput.trim()} title={!textInput.trim() ? "Type a message first" : "Send"}>
+                  <Send className="h-4 w-4 mr-2" /> Send
+                </Button>
+              ) : (
+                <Button onClick={stopGeneration} type="button" variant="destructive" title="Stop generating">
+                  <StopCircle className="h-4 w-4 mr-2" /> Stop
+                </Button>
+              )}
+            </div>
+
+            <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+              <span>Enter to send • Shift+Enter for newline</span>
+              <span>{textInput.length}/4000</span>
+            </div>
+          </div>
         </div>
       </footer>
     </div>
