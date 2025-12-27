@@ -1,5 +1,4 @@
 import { useLiveQuery } from "dexie-react-hooks";
-import ollama from "ollama";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useParams } from "react-router";
 import { ChatMessage } from "~/components/ChatMessage";
@@ -99,67 +98,40 @@ const ChatPage = () => {
     setStreamedThought("");
 
     try {
-      const stream = await ollama.chat({
-        model: "deepseek-r1",
-        messages: [
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-        stream: true,
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: prompt }),
       });
 
-      type OllamaStreamPart = { message?: { content?: string } };
-
-      let fullThought = "";
-      let fullContent = "";
-      let outputMode: "think" | "response" = "think";
-
-      const asyncStream = stream as AsyncIterable<OllamaStreamPart>;
-
-      for await (const part of asyncStream) {
-        if (cancelRef.current.cancel) break;
-        const chunk: string = part?.message?.content ?? "";
-        if (!chunk) continue;
-
-        if (outputMode === "think") {
-          if (!(chunk.includes("<think>") || chunk.includes("</think>"))) {
-            fullThought += chunk;
-          }
-          if (showThoughts) setStreamedThought(fullThought);
-          if (chunk.includes("</think>")) {
-            outputMode = "response";
-          }
-        } else {
-          fullContent += chunk;
-          setStreamedMessage((prev) => prev + chunk);
-        }
+      if (!res.ok) {
+        throw new Error("Failed to fetch AI response");
       }
 
-      const cleanThought = fullThought.replace(/<\/?think>/g, "");
-      setStreamedThought(showThoughts ? cleanThought : "");
+      const data = await res.json();
 
-      if (fullContent.trim()) {
-        await db.createMessage({
-          content: fullContent.trim(),
-          role: "assistant",
-          threadId: params.threadId as string,
-          thought: cleanThought,
-        });
-      }
+      const reply = data.reply ?? "";
+
+      setStreamedMessage(reply);
+
+      await db.createMessage({
+        content: reply,
+        role: "assistant",
+        threadId: params.threadId as string,
+        thought: "", // DeepSeek API tidak expose <think>
+      });
     } catch (err: unknown) {
       console.error(err);
       const message = err instanceof Error ? err.message : String(err);
-      setError(message || "Something went wrong while generating the response.");
+      setError(message || "Something went wrong.");
     } finally {
       setIsStreaming(false);
-      cancelRef.current.cancel = false;
-      setStreamedThought("");
       setStreamedMessage("");
+      setStreamedThought("");
       setTimeout(() => scrollToBottom(), 0);
     }
   };
+
 
   const stopGeneration = () => {
     if (!isStreaming) return;
